@@ -18,7 +18,7 @@ String morseInput = "...";
 //Adafruit_SSD1306 display(OLED_RESET);
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, OLED_RESET);     //Breite, Höhe, I2C und Reset pin für Display werden festgelegt
 
-float r = 5.5;    //Radius für Kreise
+float r = 5.4;    //Radius für Kreise
 
 int a = 0;
 
