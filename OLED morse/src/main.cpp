@@ -3,8 +3,12 @@
 #include <Adafruit_SSD1306.h>
 #include <SPI.h>
 #include <Wire.h>
+#include <esp_now.h>
+#include <WiFi.h>
 #include "morsecode10.h"
 #include "morsecode8.h"
+
+uint8_t receiverAddress[] = {0x94, 0xb9, 0x7e, 0xda, 0x4d, 0x64};
 
 int Taster = 5;
 String morseInput = "...";
@@ -48,18 +52,107 @@ char Zeichen[] = {'a','b','c','d','e','f','g','h','i','j','k','l','m',
 
 int lenghtZeichen = sizeof(Zeichen);
 
+
+struct struct_morse {
+  //char raw[5];
+  char Zeichen;
+};
+
+struct_morse dataSend;
+
+
+char charsend;    //nur um Zeichen zu senden
+char charreceive;   //um Zeichen zu empfangen
+
+String receivedline;     //speichert empfangene Zeichen zwischen, um diese bei display änderungen erneut anzeigen zu können
+String sendLine;         //speichert gesendete Zeichen zwischen, um (siehe oben)
+bool newMessagereceive = false;
+bool newMessagesend = false;
+int line = 2;
+
+
+esp_now_peer_info_t peerInfo;
+
+
+
+
+
+void checklenght(String &Zeile){
+  if ((Zeile.length() * 6 * 2 / line) >= OLED_WIDTH - 10) {     //OLED WIDTH ist 124 aber die Breit ist 123
+    Zeile.clear();
+  }  
+}
+
+void displayMessages(){
+  display.clearDisplay();
+  display.drawLine(1, OLED_HEIGHT/2, OLED_WIDTH - 2, OLED_HEIGHT/2, WHITE);
+  display.drawLine(0, OLED_HEIGHT/2 + 1, 0, OLED_HEIGHT, WHITE);
+  display.drawLine(OLED_WIDTH - 1, OLED_HEIGHT/2 - 1, OLED_WIDTH - 1, 0, WHITE);
+  if (newMessagesend == true){
+    line = 1;
+    newMessagesend = false;
+    checklenght(sendLine);        //wenn die Länge der gesendeten Zeichen unter der displaybreit ist, dann wir das einfach ausgegeben, ansonsten wird die Zeile gelöscht und neu angefangen
+    sendLine += charsend;
+    Serial.print("charsend: ");
+    Serial.println(charsend);
+  }
+  display.setCursor(5, 35);
+  display.print(sendLine);
+  Serial.print("sendString: ");
+  Serial.println(sendLine);
+
+  if (newMessagereceive == true){
+    line = 2;
+    newMessagereceive = false;
+    checklenght(receivedline);
+    receivedline += charreceive;
+  }
+  display.setCursor(0, 0);
+  display.print(receivedline);
+  
+  
+  display.display();
+}
+
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  Serial.print("\r\nLast Packet Send Status:\t");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+  newMessagesend = true;
+  displayMessages();
+}
+
+void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
+  memcpy(&charreceive, incomingData, sizeof(charreceive));
+  Serial.print("Bytes received: ");
+  Serial.println(len);
+  Serial.print("Char: ");
+  Serial.println(charreceive);
+  newMessagereceive = true;
+  displayMessages();
+}
+
 char checkChar(String morseEingabe){      //Durchgehen des Arrays nach dem Morsecode
   Serial.print(morseEingabe + " : ");
   for (int i=0; i < lenghtZeichen; i++){
     if (morseCode[i] == morseEingabe){
-      display.print(Zeichen[i]);
-      display.display();
+      //display.print(Zeichen[i]);
+      //display.display();
+      dataSend.Zeichen = Zeichen[i];
+      charsend = Zeichen[i];
+      esp_err_t result = esp_now_send(receiverAddress, (uint8_t *) &charsend, sizeof(charsend));
+      if (result == ESP_OK) {
+      Serial.println("Sent with success");
+      }
+      else {
+        Serial.println("Error sending the data");
+      }
       return Zeichen[i];                  //Ausgabe des encodierten Buchstabens
     }
   }
   display.print('?');
   return '?';
 }
+
 
 int measureDotTime(){   //misst die durchschnittliche Zeit für 1x kurz Drücken
   Serial.println("... kurze Punkte Zeit messen. Bitte 3x kurz drücken");
@@ -153,8 +246,8 @@ void recPause(long receivedPause){                                        //Län
     //return eingabeTaster;
   }
   else if (receivedPause >= (7*dotTime)){                    // Zeit etwa 7x dotTime == Pause zwischen Wörtern
-    display.print(" ");
-    display.display();
+    /*display.print(" ");
+    display.display();*/    //zur Übung, bzw. für Einsteiger keine Leerzeichen
     //Serial.println("lange Pause");
     //Serial.print(" ");                        //Leerzeichen zwischen Wörtern
   }
@@ -168,6 +261,30 @@ void setup() {
     for(;;); // Don't proceed, loop forever
   } 
   delay(1000);
+
+  WiFi.mode(WIFI_STA);
+
+  // Init ESP-NOW
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+
+  // Once ESPNow is successfully Init, we will register for recv CB to
+  // get recv packer info
+  esp_now_register_send_cb(esp_now_send_cb_t(OnDataSent));
+  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
+
+  memcpy(peerInfo.peer_addr, receiverAddress, 6);
+  peerInfo.channel = 0;  
+  peerInfo.encrypt = false;
+  
+  // Add peer        
+  if (esp_now_add_peer(&peerInfo) != ESP_OK){
+    Serial.println("Failed to add peer");
+    return;
+  }
+
   
   pinMode(Taster, INPUT_PULLUP);
   
@@ -204,6 +321,11 @@ void setup() {
 }
 
 void loop() {
+  display.drawLine(1, OLED_HEIGHT/2, OLED_WIDTH - 2, OLED_HEIGHT/2, WHITE);
+  display.drawLine(0, OLED_HEIGHT/2 + 1, 0, OLED_HEIGHT, WHITE);
+  display.drawLine(OLED_WIDTH - 1, OLED_HEIGHT/2 - 1, OLED_WIDTH - 1, 0, WHITE);
+  display.display();
+
   // put your main code here, to run repeatedly:
   if (digitalRead(Taster) == LOW && buttonhigh == false){     //wenn der Taster gedrückt wird, wird der "timer" für die Drückzeit gestartet
     pressStart = millis();
